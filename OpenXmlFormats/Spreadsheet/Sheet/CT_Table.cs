@@ -838,7 +838,7 @@ namespace NPOI.OpenXmlFormats.Spreadsheet
             sw.Write(string.Format("<{0}", nodeName));
             XmlHelper.WriteAttribute(sw, "id", this.id);
             XmlHelper.WriteAttribute(sw, "uniqueName", this.uniqueName);
-            XmlHelper.WriteAttribute(sw, "name", this.name);
+            XmlHelper.WriteAttribute(sw, "name", XmlHelper.ExcelEncodeString(this.name));
             XmlHelper.WriteAttribute(sw, "totalsRowFunction", this.totalsRowFunction.ToString());
             XmlHelper.WriteAttribute(sw, "totalsRowLabel", this.totalsRowLabel);
             XmlHelper.WriteAttribute(sw, "queryTableFieldId", this.queryTableFieldId);
