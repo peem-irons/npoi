@@ -43,6 +43,7 @@ namespace NPOI.HSSF.Record
         /**
      * The default row height for empty rows is 255 twips (255 / 20 == 12.75 points)
      */
+        // Default xls height row here, based on the new Excel format default height
         public const short DEFAULT_ROW_HEIGHT = 0xFF;
         //BitField isHeightChanged = BitFieldFactory.GetInstance(0x01);
         //BitField isZeroHeight = BitFieldFactory.GetInstance(0x02);
