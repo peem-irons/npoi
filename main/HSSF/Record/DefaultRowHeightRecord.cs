@@ -40,7 +40,7 @@ namespace NPOI.HSSF.Record
         public const short sid = 0x225;
         private short field_1_option_flags;
 
-        // Default xls height row here, based on the new Excel format default height
+        // Default xls height row here, based on the old Excel format default height
         private short field_2_row_height;
         /**
      * The default row height for empty rows is 255 twips (255 / 20 == 12.75 points)
