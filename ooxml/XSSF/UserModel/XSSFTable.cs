@@ -476,11 +476,11 @@ namespace NPOI.XSSF.UserModel
         /// 0 for no header rows, 1 for table headers shown.
         /// Values > 1 might be used by Excel for pivot tables?
         /// </summary>
-        public bool HeaderRowCount
+        public int HeaderRowCount
         {
             get 
             {
-                return ctTable.headerRowCount;
+                return (int)ctTable.headerRowCount;
             }
         }
         /**
