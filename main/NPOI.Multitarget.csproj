@@ -19,6 +19,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Enums.NET" Version="5.0.0" />
+        <PackageReference Include="SixLabors.Fonts" Version="[1.0.0]" />
 		<PackageReference Include="ExtendedNumerics.BigDecimal" Version="2025.1004.0.247" />
 		<PackageReference Include="IronSoftware.System.Drawing" Version="2025.6.2" />
 		<PackageReference Include="MathNet.Numerics.Signed" Version="5.0.0" />

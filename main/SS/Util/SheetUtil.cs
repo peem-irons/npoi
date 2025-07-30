@@ -18,7 +18,6 @@
 namespace NPOI.SS.Util
 {
     using System;
-
     using NPOI.SS.UserModel;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
@@ -531,12 +530,24 @@ namespace NPOI.SS.Util
 
             return width;
         }
-
         private static double GetCellWidth(int defaultCharWidth, int colspan,
             ICellStyle style, double width, string str, Font windowsFont, ICell cell)
         {
+            int leadingSpaces = str.TakeWhile(c => c == ' ').Count();
+            int trailingSpaces = str.Reverse().TakeWhile(c => c == ' ').Count();
+
+            string trimmed = str.Trim();
+            float trimmedWidth = string.IsNullOrEmpty(trimmed) ? 0 : (TextMeasurer.MeasureSize(trimmed, new TextOptions(windowsFont) { Dpi = dpi }).Width);
+            //TextMeasurer.MeasureSize(trimmed, new TextOptions(windowsFont) { Dpi = dpi }).Width;
+
+            float spaceWidth = string.IsNullOrEmpty(trimmed) ? 0 : (TextMeasurer.MeasureSize(" ", new TextOptions(windowsFont) { Dpi = dpi }).Width);
+            //TextMeasurer.MeasureSize(" ", new TextOptions(windowsFont) { Dpi = dpi }).Width;
+
+            double actualWidth = trimmedWidth + (leadingSpaces + trailingSpaces) * spaceWidth;
+
+
             //Rectangle bounds;
-            double actualWidth;
+            //double actualWidth;
             FontRectangle sf = TextMeasurer.MeasureSize(str, new TextOptions(windowsFont) { Dpi = dpi });
             if (style.Rotation != 0)
             {
@@ -587,6 +598,7 @@ namespace NPOI.SS.Util
         {
             DataFormatter formatter = new DataFormatter();
             int defaultCharWidth = GetDefaultCharWidth(sheet.Workbook);
+            // defaultCharWidth = (int)Math.Ceiling(TextMeasurer.MeasureSize(new string(defaultChar, 1), new TextOptions(windowsFont) { Dpi = dpi }).Width);
 
             // No need to explore the whole sheet: explore only the first maxRows lines
             if (maxRows > 0 && lastRow - firstRow > maxRows) lastRow = firstRow + maxRows;
@@ -597,6 +609,8 @@ namespace NPOI.SS.Util
                 IRow row = sheet.GetRow(rowIdx);
                 if (row != null)
                 {
+                    // ICell cell = row.GetCell(column);
+                    // int charWidth = GetCellFontCharWidth(cell);
                     double cellWidth = GetColumnWidthForRow(row, column, defaultCharWidth, formatter, useMergedCells);
                     width = Math.Max(width, cellWidth);
                 }

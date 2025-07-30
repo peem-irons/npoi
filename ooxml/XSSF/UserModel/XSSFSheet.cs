@@ -1715,6 +1715,7 @@ namespace NPOI.XSSF.UserModel
         public void AutoSizeColumn(int column, bool useMergedCells)
         {
             double width = SheetUtil.GetColumnWidth(this, column, useMergedCells);
+            // IColumn col = GetColumn(column, true);
 
             if (width != -1)
             {
@@ -1730,6 +1731,10 @@ namespace NPOI.XSSF.UserModel
                 col.Width = width / 256;
                 col.IsBestFit = true;
             }
+            // else if(col.Width != -1)
+            // {
+
+            // }
         }
 
         /// <summary>
