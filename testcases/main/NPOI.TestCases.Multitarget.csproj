@@ -14,8 +14,7 @@
 
 	<PropertyGroup>
 		<DefineConstants>HIDE_UNREACHABLE_CODE</DefineConstants>
-		<NoWarn>1701;1702;0108;0618;618;108;0612;612;162;0162</NoWarn>
-		<NoWarn>$(NoWarn);NU1605</NoWarn>
+		<NoWarn>1701;1702;0108;0618;618;108;0612;612;162;0162;NU1605</NoWarn>
         <WarningLevel>1</WarningLevel>
 	</PropertyGroup>
 
