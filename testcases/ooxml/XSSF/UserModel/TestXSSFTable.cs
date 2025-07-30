@@ -17,8 +17,6 @@
 
 namespace TestCases.XSSF.UserModel
 {
-    using System;
-    using System.Collections.Generic;
     using NPOI.OpenXmlFormats.Spreadsheet;
     using NPOI.SS.UserModel;
     using NPOI.SS.Util;
