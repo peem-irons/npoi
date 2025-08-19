@@ -17,20 +17,19 @@
 
 namespace NPOI.SS.Util
 {
-    using System;
-
     using NPOI.SS.UserModel;
+    using SixLabors.Fonts;
+    using System;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
-    using SixLabors.Fonts;
-    using System.Linq;
     using System.Globalization;
+    using System.Linq;
+    using System.Runtime.CompilerServices;
 
-    /**
-     * Helper methods for when working with Usermodel sheets
-     *
-     * @author Yegor Kozlov
-     */
+    /// <summary>
+    /// Helper methods for when working with Usermodel sheets
+    /// @author Yegor Kozlov
+    /// </summary>
     public class SheetUtil
     {
 
@@ -39,11 +38,15 @@ namespace NPOI.SS.Util
         // * but the docs say nothing about what particular character is used.
         // * '0' looks to be a good choice.
         // */
-        private static char defaultChar = '0';
 
-        // Default dpi
+        // ====== Default Constant ======
+        private const char defaultChar = '0';
         private static int dpi = 96;
-
+        private const int CELL_PADDING_PIXEL = 8;
+        private const int DEFAULT_PADDING_PIXEL = 20;
+        private const double WIDTH_CORRECTION = 1.05;
+        private const double MAXIMUM_ROW_HEIGH_IN_POINTS = 409.5;
+        private const double POINTS_PER_INCH = 72.0;
         // /**
         // * This is the multiple that the font height is scaled by when determining the
         // * boundary of rotated text.
@@ -88,6 +91,48 @@ namespace NPOI.SS.Util
                 }
             }
         }
+
+        public sealed class MergeIndex
+        {
+            private readonly Dictionary<int, List<CellRangeAddress>> _rows = new();
+
+            public static MergeIndex Build(ISheet sheet)
+            {
+                var idx = new MergeIndex();
+                for (int i = 0; i < sheet.NumMergedRegions; i++)
+                {
+                    var region = sheet.GetMergedRegion(i);
+                    for (int row = region.FirstRow; row <= region.LastRow; row++)
+                    {
+                        if (!idx._rows.TryGetValue(row, out var list))
+                            idx._rows[row] = list = new();
+                        list.Add(region);
+                    }
+                }
+                return idx;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool TryGetRegion(int row, int col, out CellRangeAddress region)
+            {
+                if (_rows.TryGetValue(row, out var list))
+                {
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var r = list[i];
+                        if (r.FirstColumn <= col && col <= r.LastColumn &&
+                            r.FirstRow <= row && row <= r.LastRow)
+                        {
+                            region = r;
+                            return true;
+                        }
+                    }
+                }
+                region = null;
+                return false;
+            }
+        }
+
         public static IRow CopyRow(ISheet sourceSheet, int sourceRowIndex, ISheet targetSheet, int targetRowIndex)
         {
             // Get the source / new row
@@ -276,16 +321,20 @@ namespace NPOI.SS.Util
             return newRow;
         }
 
-        public static double GetRowHeight(IRow row, bool useMergedCells, int firstColumnIdx, int lastColumnIdx)
+        public static double GetRowHeight(IRow row, bool useMergedCells, int firstColumnIdx, int lastColumnIdx, MergeIndex merge = null)
         {
-            double height = -1;
+            if (row == null)
+                return 0;
+
+            merge ??= MergeIndex.Build(row.Sheet);
+            double height = 0;
 
             for (int cellIdx = firstColumnIdx; cellIdx <= lastColumnIdx; ++cellIdx)
             {
                 ICell cell = row.GetCell(cellIdx);
                 if (row != null && cell != null)
                 {
-                    double cellHeight = GetCellHeight(cell, useMergedCells);
+                    double cellHeight = GetCellHeight(cell, useMergedCells, merge);
                     height = Math.Max(height, cellHeight);
                 }
             }
@@ -296,10 +345,14 @@ namespace NPOI.SS.Util
         public static double GetRowHeight(ISheet sheet, int rowIdx, bool useMergedCells, int firstColumnIdx, int lastColumnIdx)
         {
             IRow row = sheet.GetRow(rowIdx);
-            return GetRowHeight(row, useMergedCells, firstColumnIdx, lastColumnIdx);
+            if (row == null)
+                return 0;
+
+            var merge = MergeIndex.Build(sheet);
+            return GetRowHeight(row, useMergedCells, firstColumnIdx, lastColumnIdx, merge);
         }
 
-        public static double GetRowHeight(IRow row, bool useMergedCells)
+        public static double GetRowHeight(IRow row, bool useMergedCells, MergeIndex merge = null)
         {
             if (row == null)
             {
@@ -307,10 +360,11 @@ namespace NPOI.SS.Util
             }
 
             double rowHeight = -1;
+            merge = merge == null ? MergeIndex.Build(row.Sheet) : merge;
 
             foreach (var cell in row.Cells)
             {
-                double cellHeight = GetCellHeight(cell, useMergedCells);
+                double cellHeight = GetCellHeight(cell, useMergedCells, merge);
                 rowHeight = Math.Max(rowHeight, cellHeight);
             }
 
@@ -320,140 +374,56 @@ namespace NPOI.SS.Util
         public static double GetRowHeight(ISheet sheet, int rowIdx, bool useMergedCells)
         {
             IRow row = sheet.GetRow(rowIdx);
+            var merge = MergeIndex.Build(sheet);
 
-            return GetRowHeight(row, useMergedCells);
+            return GetRowHeight(row, useMergedCells, merge);
         }
 
-        public static double GetCellHeight(ICell cell, bool useMergedCells)
+        public static double GetCellHeight(ICell cell, bool useMergedCells, MergeIndex merge = null)
         {
             if (cell == null)
-                return -1;
+                return 0;
+            merge ??= MergeIndex.Build(cell.Sheet);
+            var mergedRegion = GetMergedRegionForCell(cell, merge);
+            if (mergedRegion == null || !useMergedCells)
+            {
+                // Not merged
+                return cell.CellStyle.WrapText
+                    ? MeasureWrapTextHeight(cell, cell.ColumnIndex, cell.ColumnIndex, cell.RowIndex, cell.RowIndex)
+                    : GetActualHeight(cell);
+            }
 
-            // 1. Check if the cell is part of a merged region
-            if (useMergedCells && cell.IsMergedCell)
+            // Use the cell at the top-left of the merged region for the value
+            var topLeftCell = cell.Sheet.GetRow(mergedRegion.FirstRow)?.GetCell(mergedRegion.FirstColumn);
+            if (topLeftCell == null)
                 return cell.Sheet.DefaultRowHeightInPoints;
 
-            var style = cell.CellStyle;
-            if (style == null)
-                return GetActualHeight(cell); // fallback to simple actual height
 
-            bool isWrap = style.WrapText;
-            //bool isRotated = style.Rotation != 0;
-            string stringValue = GetCellStringValue(cell);
-            Font windowsFont = GetWindowsFont(cell);
+            int mergedRowCount = 1 + mergedRegion.LastRow - mergedRegion.FirstRow;
+            double mergedWidth = 0;
+            //for (int col = mergedRegion.FirstColumn; col <= mergedRegion.LastColumn; col++)
+                //mergedWidth += GetColumnWidthInPixels(cell.Sheet, col, topLeftCell);
 
-            // To-Do: case WrapText with Rotation
-            // Case 1: Rotation + WrapText (special rule: only shrink, not expand)
-            //if (isWrap && isRotated)
-            //{
-            //    double contentHeight = GetRotatedContentHeight(cell, stringValue, windowsFont);
-            //    double currentRowHeight = cell.Row.HeightInPoints;
+            mergedWidth = GetMergedPixelWidth(cell.Sheet, mergedRegion.FirstRow, mergedRegion.FirstColumn, mergedRegion.LastRow, mergedRegion.LastColumn, cell);
 
-            //    // Only shrink if content is smaller than current row height
-            //    return contentHeight < currentRowHeight ? contentHeight : currentRowHeight;
-            //}
+            // Measure the total height for the text, with all columns combined
+            double totalHeight = MeasureWrapTextHeight(topLeftCell, mergedRegion.FirstColumn, mergedRegion.LastColumn, mergedRegion.FirstRow, mergedRegion.LastRow, mergedWidth);
 
-            // Case 2: WrapText only (normal grow/shrink behavior)
-            if (isWrap)
-            {
-                return GetWrapCellHeight(cell, useMergedCells);
-            }
-
-            // To-Do: case WrapText with Rotation
-            // Case 3: Rotation only (auto-size enabled)
-            //if (isRotated)
-            //{
-            //    return GetRotatedContentHeight(cell, stringValue, windowsFont);
-            //}
-
-            // Case 4: Normal text, auto-size
-            return GetActualHeight(cell);
-        }
-
-        /// <summary>
-        /// Calculates the required height of a cell with WrapText enabled.
-        /// </summary>
-        private static double GetWrapCellHeight(ICell cell, bool useMergedCells)
-        {
-            if (cell == null || cell.Row == null)
-            {
-                return cell.Sheet.DefaultRowHeightInPoints; // return default row height 
-            }
-
-            ISheet sheet = cell.Sheet;
-
-            // 1. Get all the necessary info
-            string stringValue = GetCellStringValue(cell);
-            if (string.IsNullOrEmpty(stringValue))
-            {
-                return cell.Sheet.DefaultRowHeightInPoints; // return default row height 
-            }
-
-            Font font = GetWindowsFont(cell);
-
-            // 2. Calculate the available width for the text in pixels
-            double availableWidthPixels = GetColumnWidthInPixels(sheet, cell.ColumnIndex, cell);
-            //availableWidthPixels = 96;
-
-            // Subtract a small amount for cell padding
-            availableWidthPixels -= 5;
-            if (availableWidthPixels <= 0)
-            {
-                return GetContentHeight(stringValue, font); // Not enough space to wrap
-            }
-
-            // 3. Measure the text height with wrapping
-            string[] lines = stringValue.Split('\n');
-            double totalHeightPixels = 0;
-
-            foreach (string line in lines)
-            {
-                if (string.IsNullOrEmpty(line))
-                {
-                    // Handle empty lines from manual breaks (\n\n)
-                    totalHeightPixels += font.Size;
-                    continue;
-                }
-
-                // Use SixLabors.Fonts to measure the string with a wrapping length.
-                var textOptions = new TextOptions(font) { WrappingLength = (float)availableWidthPixels, Dpi = dpi };
-                FontRectangle measuredBounds = TextMeasurer.MeasureAdvance(line, textOptions);
-
-                totalHeightPixels += Math.Round(measuredBounds.Height, 0, MidpointRounding.ToEven);
-            }
-
-            return totalHeightPixels;
-        }
-
-        /// <summary>
-        /// Finds the CellRangeAddress for a given cell, if it's part of a merged region.
-        /// </summary>
-        public static CellRangeAddress GetMergedRegionForCell(ICell cell)
-        {
-            if (cell == null || !cell.IsMergedCell)
-                return null;
-            foreach (var region in cell.Sheet.MergedRegions)
-            {
-                if (region.IsInRange(cell.RowIndex, cell.ColumnIndex))
-                {
-                    return region;
-                }
-            }
-            return null;
+            // Divide height over all rows in merged region
+            return totalHeight / Math.Max(mergedRowCount, 1);
         }
 
         /// <summary>
         /// Converts Excel's column width (units of 1/256th of a character width) to pixels.
         /// </summary>
-        private static double GetColumnWidthInPixels(ISheet sheet, int columnIndex, ICell cell)
+        private static float GetColumnWidthInPixels(ISheet sheet, int columnIndex, ICell cell)
         {
             double widthInUnits = sheet.GetColumnWidth(columnIndex);
             int cellFontCharWidth = GetCellFontCharWidth(cell);
 
             // This formula is a standard approximation
-            return (double)widthInUnits / 256 * cellFontCharWidth;
+            return (float)widthInUnits / 256 * cellFontCharWidth;
         }
-
         private static ICell GetFirstCellFromMergedRegion(ICell cell)
         {
             foreach (var region in cell.Sheet.MergedRegions)
@@ -467,17 +437,29 @@ namespace NPOI.SS.Util
             return cell;
         }
 
+        // 4.
         private static double GetActualHeight(ICell cell)
         {
-            string stringValue = GetCellStringValue(cell);
-            Font windowsFont = GetWindowsFont(cell);
+            string? stringValue = GetCellStringValue(cell);
 
-            if (cell.CellStyle.Rotation != 0)
+            if (string.IsNullOrEmpty(stringValue))
+                return 0;
+
+            var style = cell.CellStyle;
+            var windowsFont = GetWindowsFont(cell);
+
+            if(!style.WrapText && style.Rotation == 0 && stringValue.IndexOf('\n') < 0)
+            {
+                var lineHeight = GetLineHeight(windowsFont);
+                return Math.Round(lineHeight, 0, MidpointRounding.ToEven);
+            }
+
+            if (style.Rotation != 0)
             {
                 return GetRotatedContentHeight(cell, stringValue, windowsFont);
             }
 
-            return GetContentHeight(stringValue, windowsFont);
+            return GetContentHeight(stringValue, windowsFont, cell);
         }
 
         private static int GetNumberOfRowsInMergedRegion(ICell cell)
@@ -550,42 +532,73 @@ namespace NPOI.SS.Util
             var x2 = Math.Abs(measureResult.Width * Math.Sin(angle));
 
             return Math.Round(x1 + x2, 0, MidpointRounding.ToEven);
-
-            // To-Do: fix calculation of text rotation with height
-            //if (cell == null || cell.CellStyle == null || string.IsNullOrEmpty(stringValue))
-            //    return 0;
-
-            //// Convert degrees to radians
-            //double angleRad = cell.CellStyle.Rotation * Math.PI / 180.0;
-
-            //// Measure unrotated text size
-            //var textSize = TextMeasurer.MeasureAdvance(
-            //    stringValue,
-            //    new TextOptions(windowsFont)
-            //    {
-            //        Dpi = dpi
-            //    }
-            //);
-
-            //// Get the column width in pixels or points (depends on your library; adjust accordingly)
-            //double columnWidthInPixels = GetColumnWidthInPixels(cell.Sheet, cell.ColumnIndex, cell);
-
-            //// Optional: Clamp text width to cell width if needed
-            //var measuredTextWidth = Math.Min(textSize.Width, columnWidthInPixels);
-
-            //// Calculate rotated bounding box height
-            //double rotatedHeight = Math.Abs(textSize.Height * Math.Cos(angleRad)) + Math.Abs(measuredTextWidth * Math.Sin(angleRad));
-            ////double rotatedHeight = (Math.Abs(textSize.Height * Math.Cos(angleRad)) + Math.Abs(measuredTextWidth * Math.Sin(angleRad))) * 1.07 + 1.5;
-            //return Math.Round(rotatedHeight, 0, MidpointRounding.ToEven);
-
         }
 
-        private static double GetContentHeight(string stringValue, Font windowsFont)
+        private static double GetContentHeight(string stringValue, Font windowsFont, ICell cell)
         {
-            var measureResult = TextMeasurer.MeasureAdvance(stringValue, new TextOptions(windowsFont) { Dpi = dpi });
+            TextOptions options = new(windowsFont) { Dpi = dpi };
+            if (cell.CellStyle.WrapText)
+            {
+                ISheet sheet = cell.Sheet;
+                int columnIndex = cell.ColumnIndex;
+                var pixelWidth = GetColumnWidthInPixels(sheet, columnIndex, cell);
+                options.WrappingLength = pixelWidth <= 0
+                    ? (float)sheet.GetColumnWidth(columnIndex)
+                    : pixelWidth;
+            }
+            var measureResult = TextMeasurer.MeasureAdvance(stringValue,options);
 
             return Math.Round(measureResult.Height, 0, MidpointRounding.ToEven);
         }
+
+        /// <summary>
+        /// Measures the height of a cell when wrap text is applied.
+        /// </summary>
+        /// <param name="cell">The cell whose height will be calculated.</param>
+        /// <param name="firstCol">The first column index for width calculation.</param>
+        /// <param name="lastCol">The last column index for width calculation.</param>
+        /// <param name="customMergedWidth">If specified, the total width (in pixels) to use for wrapping.</param>
+        /// <returns>The calculated height of the cell in pixels.</returns>
+        private static double MeasureWrapTextHeight(
+            ICell cell,
+            int firstCol,
+            int lastCol,
+            int firstRow,
+            int lastRow,
+            double? customMergedWidth = null)
+        {
+            if (cell == null || cell.Row == null)
+                return cell?.Sheet?.DefaultRowHeightInPoints ?? 0;
+
+            ISheet sheet = cell.Sheet;
+            string text = GetCellStringValue(cell);
+            if (string.IsNullOrEmpty(text))
+                return sheet.DefaultRowHeightInPoints;
+
+            // Determine the font to use
+            Font font = GetWindowsFont(cell);
+
+            // Determine the width in pixels to wrap by (sum columns if merged)
+            double wrapWidthPixels = customMergedWidth ?? 0;
+            if (!customMergedWidth.HasValue)
+            {
+                wrapWidthPixels = GetMergedPixelWidth(cell.Sheet, firstRow, firstCol, lastRow, lastCol, cell);
+            }
+
+            // Account for padding
+            wrapWidthPixels -= CELL_PADDING_PIXEL;
+            if (wrapWidthPixels <= 0)
+               wrapWidthPixels = DEFAULT_PADDING_PIXEL; // fallback
+            wrapWidthPixels = Math.Ceiling(wrapWidthPixels);
+            var textOptions = new TextOptions(font)
+            {
+                WrappingLength = (float)wrapWidthPixels,
+                Dpi = dpi
+            };
+            FontRectangle totalBounds = TextMeasurer.MeasureAdvance(text, textOptions);
+            return Math.Round(totalBounds.Height, 0, MidpointRounding.ToEven);
+        }
+
 
         /**
          * Compute width of a single cell
@@ -683,7 +696,6 @@ namespace NPOI.SS.Util
         private static double GetCellWidth(int defaultCharWidth, int colspan,
             ICellStyle style, double width, string str, Font windowsFont, ICell cell)
         {
-            //Rectangle bounds;
             double actualWidth;
             FontRectangle sf = TextMeasurer.MeasureSize(str, new TextOptions(windowsFont) { Dpi = dpi });
             if (style.Rotation != 0)
@@ -694,12 +706,27 @@ namespace NPOI.SS.Util
                 actualWidth = Math.Round(x1 + x2, 0, MidpointRounding.ToEven);
             }
             else
+            {
                 actualWidth = Math.Round(sf.Width, 0, MidpointRounding.ToEven);
+            }
 
-            int padding = 5;
-            double correction = 1.05;
-            width = Math.Max(width, ((actualWidth + padding) / colspan / defaultCharWidth * correction) + cell.CellStyle.Indention);
-            return width;
+            int leadingSpaces = str.TakeWhile(c => c == ' ').Count();
+            int trailingSpaces = str.Reverse().TakeWhile(c => c == ' ').Count();
+
+            string trimmed = str.Trim();
+            float trimmedWidth = TextMeasurer.MeasureSize(trimmed, new TextOptions(windowsFont) { Dpi = dpi }).Width;
+
+            float spaceWidth = TextMeasurer.MeasureSize(" ", new TextOptions(windowsFont) { Dpi = dpi }).Width;
+
+            actualWidth = trimmedWidth + (leadingSpaces + trailingSpaces) * spaceWidth;
+
+            int padding = CELL_PADDING_PIXEL;
+            double correction = WIDTH_CORRECTION;
+
+            // Now convert the total pixel width to Excel's character width units
+            double finalWidth = (actualWidth + padding) / colspan / defaultCharWidth * correction;
+
+            return Math.Max(width, finalWidth);
         }
 
         // /**
@@ -811,6 +838,39 @@ namespace NPOI.SS.Util
          * @param useMergedCells    whether to use merged cells
          * @return  the width in pixels or -1 if cell is empty
          */
+
+        /// <summary>
+        /// Gets the width of a standard character ('0') using the specific font and style of the given cell.
+        /// This provides a font-specific benchmark for layout calculations like column width or text wrapping.
+        /// </summary>
+        public static int GetCellFontCharWidth(ICell cell)
+        {
+            // 1. Guard clause for null cells.
+            if (cell == null)
+            {
+                return 0;
+            }
+
+            // 2. Get the workbook and the cell's specific style.
+            IWorkbook wb = cell.Sheet.Workbook;
+            ICellStyle style = cell.CellStyle;
+
+            // 3. Get the IFont object from the style's font index.
+            // Every style points to a font in the workbook's font table.
+            IFont npoiFont = wb.GetFontAt(style.FontIndex);
+
+            // 4. Convert the NPOI IFont to a SixLabors.Fonts.Font object
+            // using the existing helper method.
+            Font sixLaborsFont = IFont2Font(npoiFont);
+
+            // 5. Measure the width of the single 'defaultChar' ('0') which is defined
+            // at the class level. We use MeasureAdvance as it's efficient for single-line width.
+            var textOptions = new TextOptions(sixLaborsFont) { Dpi = dpi };
+            FontRectangle size = TextMeasurer.MeasureAdvance(defaultChar.ToString(), textOptions);
+           
+            // 6. Return the calculated width.
+            return (int)Math.Ceiling(size.Width);
+        }
         private static double GetColumnWidthForRow(
                 IRow row, int column, int defaultCharWidth, DataFormatter formatter, bool useMergedCells)
         {
@@ -961,6 +1021,50 @@ namespace NPOI.SS.Util
             return new Font(fontFamily, cacheKey.FontHeightInPoints, cacheKey.Style);
         }
 
+        private static readonly ConcurrentDictionary<FontCacheKey, float> _lineHeights = new();
+        private static readonly ConcurrentDictionary<FontCacheKey, float> _spaceWidths = new();
+
+        private static FontStyle GetStyle(Font f)
+        {
+            var s = FontStyle.Regular;
+            if (f.IsBold)
+                s |= FontStyle.Bold;
+            if (f.IsItalic)
+                s |= FontStyle.Italic;
+            return s;
+        }
+        private static FontCacheKey KeyFrom(Font f)
+            => new FontCacheKey(f.Family.Name, f.Size, GetStyle(f));
+
+        private static float GetLineHeight(Font font)
+        {
+            var key = KeyFrom(font);
+            return _lineHeights.GetOrAdd(key,
+                _ => TextMeasurer.MeasureAdvance("Hg", new TextOptions(font) { Dpi = dpi }).Height);
+        }
+
+        private static float GetSpaceWidth(Font f)
+        {
+            var key = KeyFrom(f);
+            return _spaceWidths.GetOrAdd(key,
+                _ => TextMeasurer.MeasureSize(" ", new TextOptions(f) { Dpi = dpi }).Width);
+        }
+
+        // memoize total pixel width of merged region once
+        private static readonly ConcurrentDictionary<(ISheet, int, int, int, int), double> _mergedWidthCache = new();
+
+        private static double GetMergedPixelWidth(ISheet sheet, int firstRow, int firstColumn, int lastRow, int lastColumn, ICell refCell)
+        {
+            var key = (sheet, firstRow, firstColumn, lastRow, lastColumn);
+            if (_mergedWidthCache.TryGetValue(key, out var w))
+                return w;
+            double sum = 0;
+            for (int col = firstColumn; col <= lastColumn; col++)
+                sum += GetColumnWidthInPixels(sheet, col, refCell);
+            _mergedWidthCache[key] = sum;
+            return sum;
+        }
+
         /// <summary>
         /// Check if the cell is in the specified cell range
         /// </summary>
@@ -1067,6 +1171,13 @@ namespace NPOI.SS.Util
             // If we Get here, then the cell isn't defined, and doesn't
             //  live within any merged regions
             return null;
+        }
+
+        public static CellRangeAddress GetMergedRegionForCell(ICell cell, MergeIndex merge)
+        {
+            return merge.TryGetRegion(cell.RowIndex, cell.ColumnIndex, out var region)
+                ? region
+                : null;
         }
 
     }
