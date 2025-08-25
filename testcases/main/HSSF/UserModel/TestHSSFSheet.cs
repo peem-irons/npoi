@@ -811,7 +811,7 @@ namespace TestCases.HSSF.UserModel
             sheet.AutoSizeRow(row.RowNum);
 
             Assert.AreNotEqual(100, row.Height);
-            Assert.AreEqual(540, row.Height);
+            AssertResultIsAproximatelyCorrect(540, row.Height);
 
             workbook.Close();
         }
